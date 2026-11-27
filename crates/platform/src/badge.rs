@@ -2,6 +2,15 @@
 pub const fn supported() -> bool {
 	cfg!(any(target_os = "windows", target_os = "macos"))
 }
+/// Installs, once, a watcher for the messages that make Windows forget a taskbar overlay.
+/// Without one, the badge is only re-applied when the count changes.
+#[cfg(not(target_os = "windows"))]
+pub fn watch(_window: &winit::window::Window) {}
+/// True once after the taskbar button was (re)created, so the badge must be set again.
+#[cfg(not(target_os = "windows"))]
+pub fn take_reapply() -> bool {
+	false
+}
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn set(_window: &winit::window::Window, _count: u32) -> Result<(), &'static str> {
 	Err("App icon badges are currently available on Windows and macOS.")
@@ -20,6 +29,89 @@ pub fn set(_window: &winit::window::Window, count: u32) -> Result<(), &'static s
 		.dockTile()
 		.setBadgeLabel(label.as_deref());
 	Ok(())
+}
+#[cfg(target_os = "windows")]
+static REAPPLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static BUTTON_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "windows")]
+static WATCHING: std::sync::Once = std::sync::Once::new();
+/// Installs, once, a watcher for the messages that make Windows forget a taskbar overlay:
+/// `TaskbarButtonCreated` (the button now exists) and `TaskbarCreated` (Explorer restarted).
+/// Without it the badge is only re-applied when the count changes.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn watch(window: &winit::window::Window) {
+	use std::sync::atomic::Ordering;
+	use windows::{
+		Win32::{
+			Foundation::HWND,
+			UI::{Shell::SetWindowSubclass, WindowsAndMessaging::RegisterWindowMessageW},
+		},
+		core::w,
+	};
+	use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+	let Ok(handle) = window.window_handle() else {
+		return;
+	};
+	let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+		return;
+	};
+	WATCHING.call_once(|| {
+		// SAFETY: registers two fixed system message names, then subclasses the UI-thread
+		// window; the callback only touches statics and is removed on WM_NCDESTROY.
+		unsafe {
+			BUTTON_CREATED.store(
+				RegisterWindowMessageW(w!("TaskbarButtonCreated")),
+				Ordering::Relaxed,
+			);
+			TASKBAR_CREATED.store(
+				RegisterWindowMessageW(w!("TaskbarCreated")),
+				Ordering::Relaxed,
+			);
+			let _ = SetWindowSubclass(
+				HWND(handle.hwnd.get() as *mut _),
+				Some(watch_proc),
+				0x5345_4252,
+				0,
+			);
+		}
+	});
+}
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+unsafe extern "system" fn watch_proc(
+	hwnd: windows::Win32::Foundation::HWND,
+	message: u32,
+	wparam: windows::Win32::Foundation::WPARAM,
+	lparam: windows::Win32::Foundation::LPARAM,
+	id: usize,
+	_data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+	use std::sync::atomic::Ordering;
+	use windows::Win32::UI::{
+		Shell::{DefSubclassProc, RemoveWindowSubclass},
+		WindowsAndMessaging::WM_NCDESTROY,
+	};
+	if message != 0
+		&& (message == BUTTON_CREATED.load(Ordering::Relaxed)
+			|| message == TASKBAR_CREATED.load(Ordering::Relaxed))
+	{
+		REAPPLY.store(true, Ordering::Relaxed);
+	}
+	if message == WM_NCDESTROY {
+		// SAFETY: removes this subclass from the window being destroyed.
+		let _ = unsafe { RemoveWindowSubclass(hwnd, Some(watch_proc), id) };
+	}
+	// SAFETY: forwards the unhandled message down the subclass chain.
+	unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+/// True once after the taskbar button was (re)created, so the badge must be set again.
+#[cfg(target_os = "windows")]
+pub fn take_reapply() -> bool {
+	REAPPLY.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]

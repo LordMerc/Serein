@@ -185,7 +185,10 @@ impl Runtime {
 		// must re-apply the overlay Windows dropped with the taskbar button. The Dock badge
 		// does not depend on the window.
 		let shown = !cfg!(target_os = "windows") || window.is_visible() != Some(false);
-		if shown && !self.window_shown {
+		platform::badge::watch(window);
+		// The taskbar button was created or Explorer restarted: either drops the overlay.
+		let recreated = platform::badge::take_reapply();
+		if recreated || (shown && !self.window_shown) {
 			self.badge_applied = None;
 			self.badge_retry = None;
 			self.badge_check = None;
