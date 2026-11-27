@@ -29,6 +29,9 @@ pub struct Runtime {
 	/// The count the OS last accepted. Cleared when a set fails or the window comes back from
 	/// the tray, since Windows drops a hidden window's taskbar overlay with its button.
 	badge_applied: Option<u32>,
+	/// When the last set failed, so a persistent failure retries every few seconds and not
+	/// on every frame (recounts run per frame while signed out).
+	badge_retry: Option<Instant>,
 	window_shown: bool,
 	badge_check: Option<Instant>,
 	badge_status: &'static str,
@@ -184,6 +187,7 @@ impl Runtime {
 		let shown = !cfg!(target_os = "windows") || window.is_visible() != Some(false);
 		if shown && !self.window_shown {
 			self.badge_applied = None;
+			self.badge_retry = None;
 			self.badge_check = None;
 		}
 		self.window_shown = shown;
@@ -199,7 +203,13 @@ impl Runtime {
 			};
 			self.badge = Some(pings);
 			// A failed set is retried on the next recount instead of being taken as shown.
-			if platform::badge::supported() && shown && self.badge_applied != Some(pings) {
+			let retry_due = self
+				.badge_retry
+				.is_none_or(|time| time.elapsed() >= Duration::from_secs(5));
+			if platform::badge::supported()
+				&& shown && self.badge_applied != Some(pings)
+				&& retry_due
+			{
 				let result = platform::badge::set(window, pings);
 				// Only counts and fixed text: why a ping did or did not reach the taskbar.
 				diagnostics::record_fields(
@@ -218,6 +228,7 @@ impl Runtime {
 				);
 				self.badge_status = result.err().unwrap_or("");
 				self.badge_applied = result.is_ok().then_some(pings);
+				self.badge_retry = self.badge_applied.is_none().then(Instant::now);
 				if self.badge_applied.is_none() {
 					ctx.request_repaint_after(Duration::from_secs(5));
 				}
