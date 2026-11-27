@@ -33,28 +33,35 @@ pub fn set(window: &winit::window::Window, count: u32) -> Result<(), &'static st
 			},
 			UI::{
 				Shell::{ITaskbarList3, TaskbarList},
-				WindowsAndMessaging::{CreateIcon, DestroyIcon, HICON},
+				WindowsAndMessaging::{DestroyIcon, HICON},
 			},
 		},
 		core::w,
 	};
 	use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-	const ERROR: &str = "Taskbar badge unavailable. Check your Windows taskbar settings.";
-	let RawWindowHandle::Win32(handle) = window.window_handle().map_err(|_| ERROR)?.as_raw() else {
-		return Err(ERROR);
+	// Each stage has its own text so a diagnostic log shows which one Windows refused.
+	const HANDLE: &str = "Taskbar badge unavailable: no window handle.";
+	const TASKBAR: &str = "Taskbar badge unavailable: the Windows taskbar did not respond.";
+	const ICON: &str = "Taskbar badge unavailable: the badge image could not be made.";
+	const OVERLAY: &str =
+		"Taskbar badge unavailable: Windows refused it. Check your Windows taskbar settings.";
+	let RawWindowHandle::Win32(handle) = window.window_handle().map_err(|_| HANDLE)?.as_raw()
+	else {
+		return Err(HANDLE);
 	};
 	// SAFETY: all COM operations and the retained winit handle stay on the UI thread.
 	let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
 	let result = (|| {
 		let taskbar: ITaskbarList3 =
 			unsafe { CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER) }
-				.map_err(|_| ERROR)?;
-		unsafe { taskbar.HrInit() }.map_err(|_| ERROR)?;
+				.map_err(|_| TASKBAR)?;
+		unsafe { taskbar.HrInit() }.map_err(|_| TASKBAR)?;
 		let icon = if count > 0 {
-			let (mask, pixels) = count_icon(count);
-			// SAFETY: buffers contain exactly a 16x16 1-bit AND mask and 32-bit BGRA pixels.
-			unsafe { CreateIcon(None, 16, 16, 1, 32, mask.as_ptr(), pixels.as_ptr()) }
-				.map_err(|_| ERROR)?
+			// The tray's DIB-section icon path: an icon from CreateIcon's 32-bit
+			// device-dependent bitmap was never seen on the taskbar.
+			let pixels = count_icon(count);
+			// SAFETY: the buffer is exactly 16x16 premultiplied BGRA pixels, top-down.
+			unsafe { crate::tray::native::create_hicon_from_bgra(16, 16, &pixels) }.ok_or(ICON)?
 		} else {
 			HICON::default()
 		};
@@ -62,7 +69,7 @@ pub fn set(window: &winit::window::Window, count: u32) -> Result<(), &'static st
 		let result = unsafe {
 			taskbar.SetOverlayIcon(HWND(handle.hwnd.get() as *mut _), icon, w!("Direct pings"))
 		}
-		.map_err(|_| ERROR);
+		.map_err(|_| OVERLAY);
 		if count > 0 {
 			let _ = unsafe { DestroyIcon(icon) };
 		}
@@ -75,7 +82,7 @@ pub fn set(window: &winit::window::Window, count: u32) -> Result<(), &'static st
 	result
 }
 #[cfg(target_os = "windows")]
-fn count_icon(count: u32) -> ([u8; 32], [u8; 1024]) {
+fn count_icon(count: u32) -> [u8; 1024] {
 	const DIGITS: [[u8; 7]; 10] = [
 		[14, 17, 19, 21, 25, 17, 14],
 		[4, 12, 4, 4, 4, 4, 14],
@@ -88,10 +95,8 @@ fn count_icon(count: u32) -> ([u8; 32], [u8; 1024]) {
 		[14, 17, 17, 14, 17, 17, 14],
 		[14, 17, 17, 15, 1, 1, 14],
 	];
-	let mut mask = [255; 32];
 	let mut pixels = [0; 1024];
 	let mut paint = |x: usize, y: usize, color: [u8; 4]| {
-		mask[y * 2 + x / 8] &= !(1 << (7 - x % 8));
 		pixels[(y * 16 + x) * 4..(y * 16 + x + 1) * 4].copy_from_slice(&color);
 	};
 	// Sample around the actual 16-pixel center; the previous offset clipped the right edge.
@@ -154,5 +159,5 @@ fn count_icon(count: u32) -> ([u8; 32], [u8; 1024]) {
 			}
 		}
 	}
-	(mask, pixels)
+	pixels
 }

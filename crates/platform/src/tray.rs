@@ -233,7 +233,7 @@ impl Tray {
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
-mod native {
+pub(crate) mod native {
 	use super::{Event, Events, MenuState, Row};
 	use std::{
 		cell::{Cell, RefCell},
@@ -723,7 +723,13 @@ mod native {
 		]
 	}
 
-	unsafe fn create_hicon_from_bgra(width: u32, height: u32, bgra: &[u8]) -> Option<HICON> {
+	/// Builds an alpha icon from top-down premultiplied BGRA through a DIB section, the form
+	/// the taskbar blends correctly. Also used for the app badge overlay.
+	pub(crate) unsafe fn create_hicon_from_bgra(
+		width: u32,
+		height: u32,
+		bgra: &[u8],
+	) -> Option<HICON> {
 		use windows::Win32::Graphics::Gdi::{
 			BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
 			DeleteObject,

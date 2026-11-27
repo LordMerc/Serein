@@ -192,15 +192,30 @@ impl Runtime {
 		let since = self.badge_check.map(|time| time.elapsed());
 		if since.is_none_or(|since| since >= Duration::from_secs(1)) || !badges || !live {
 			self.badge_check = Some(Instant::now());
-			let pings = if live && badges {
+			let (pings, muted) = if live && badges {
 				badge_count(state)
 			} else {
-				0
+				(0, 0)
 			};
 			self.badge = Some(pings);
 			// A failed set is retried on the next recount instead of being taken as shown.
 			if platform::badge::supported() && shown && self.badge_applied != Some(pings) {
 				let result = platform::badge::set(window, pings);
+				// Only counts and fixed text: why a ping did or did not reach the taskbar.
+				diagnostics::record_fields(
+					diagnostics::Category::App,
+					if result.is_ok() {
+						diagnostics::Level::Info
+					} else {
+						diagnostics::Level::Warn
+					},
+					"app badge",
+					&[
+						("count", pings.into()),
+						("muted_mentions", muted.into()),
+						("result", result.err().unwrap_or("ok").into()),
+					],
+				);
 				self.badge_status = result.err().unwrap_or("");
 				self.badge_applied = result.is_ok().then_some(pings);
 				if self.badge_applied.is_none() {
@@ -313,30 +328,30 @@ impl Runtime {
 	}
 }
 
-fn badge_count(state: &State) -> u32 {
-	state
-		.channels
-		.iter()
-		.try_fold(0u32, |total, channel| {
-			if total >= 100 {
-				return None;
-			}
-			let count = state.mention_count(channel.id);
-			if count == 0 {
-				return Some(total);
-			}
-			let muted = if channel.guild.is_some() {
-				state.muted_for_guild_rail(channel)
-			} else {
-				state.dm_muted(channel.id) == Some(true)
-			};
-			Some(if muted {
-				total
-			} else {
-				total.saturating_add(count).min(100)
-			})
-		})
-		.unwrap_or(100)
+/// Unmuted mentions and direct messages for the app badge, capped at 100, and the mentions
+/// left out because their server, channel or conversation is muted.
+fn badge_count(state: &State) -> (u32, u32) {
+	let (mut total, mut muted) = (0u32, 0u32);
+	for channel in state.channels.iter() {
+		if total >= 100 {
+			break;
+		}
+		let count = state.mention_count(channel.id);
+		if count == 0 {
+			continue;
+		}
+		let skipped = if channel.guild.is_some() {
+			state.muted_for_guild_rail(channel)
+		} else {
+			state.dm_muted(channel.id) == Some(true)
+		};
+		if skipped {
+			muted = muted.saturating_add(count).min(100);
+		} else {
+			total = total.saturating_add(count).min(100);
+		}
+	}
+	(total, muted)
 }
 
 #[cfg(any(test, all(debug_assertions, feature = "demo")))]
@@ -352,7 +367,7 @@ pub fn debug_badge_check() {
 			partial: false,
 		}),
 	});
-	assert_eq!(badge_count(&state), 7);
+	assert_eq!(badge_count(&state).0, 7);
 	for (guild, channels, muted, expected) in [
 		(None, vec![(Id(22), Some(true), None)], false, 3),
 		(Some(Id(10)), vec![(Id(20), Some(true), None)], false, 0),
@@ -373,7 +388,7 @@ pub fn debug_badge_check() {
 				replace: false,
 			})
 			.unwrap();
-		assert_eq!(badge_count(&state), expected);
+		assert_eq!(badge_count(&state).0, expected);
 	}
 	assert_eq!(state.mention_count(Id(20)), 3);
 	assert_eq!(state.mention_count(Id(22)), 4);
@@ -396,7 +411,7 @@ pub fn debug_badge_check() {
 				replace: false,
 			})
 			.unwrap();
-		assert_eq!(badge_count(&state), expected);
+		assert_eq!(badge_count(&state).0, expected);
 		assert_eq!(state.next_mute_expiry().is_some(), until == i64::MAX);
 	}
 	state.apply(Envelope {
@@ -407,7 +422,7 @@ pub fn debug_badge_check() {
 			partial: false,
 		}),
 	});
-	assert_eq!(badge_count(&state), 100);
+	assert_eq!(badge_count(&state).0, 100);
 	println!("Notification badge debug check passed: mutes, expiry, unmute and count cap.");
 }
 
