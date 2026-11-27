@@ -26,6 +26,10 @@ pub struct Runtime {
 	ring: Option<((Id, Sound), Instant)>,
 	ptt: PttCues,
 	badge: Option<u32>,
+	/// The count the OS last accepted. Cleared when a set fails or the window comes back from
+	/// the tray, since Windows drops a hidden window's taskbar overlay with its button.
+	badge_applied: Option<u32>,
+	window_shown: bool,
 	badge_check: Option<Instant>,
 	badge_status: &'static str,
 	/// Direct conversations that alerted since they were last read, with the message that
@@ -125,10 +129,11 @@ impl Runtime {
 		self.sounds.stop();
 		self.ptt_sounds.stop();
 		self.ring = None;
-		if self.badge.is_some_and(|count| count > 0) {
+		if self.badge_applied.is_some_and(|count| count > 0) {
 			let _ = platform::badge::set(window, 0);
 		}
 		self.badge = None;
+		self.badge_applied = None;
 		// Another account may sign in next; its conversations start without alert history.
 		self.pinged_directs.clear();
 	}
@@ -173,6 +178,15 @@ impl Runtime {
 		if let Some(sound) = sound {
 			self.sounds.play(sound, options.volume, ctx);
 		}
+		// Checked every frame: a tray-hidden window may run none, and its first frame back
+		// must re-apply the overlay Windows dropped with the taskbar button. The Dock badge
+		// does not depend on the window.
+		let shown = !cfg!(target_os = "windows") || window.is_visible() != Some(false);
+		if shown && !self.window_shown {
+			self.badge_applied = None;
+			self.badge_check = None;
+		}
+		self.window_shown = shown;
 		// Counts otherwise only change while frames run: a throttled frame schedules one
 		// follow-up recount, and then the window can sleep until the next mute expiry.
 		let since = self.badge_check.map(|time| time.elapsed());
@@ -183,9 +197,15 @@ impl Runtime {
 			} else {
 				0
 			};
-			if platform::badge::supported() && self.badge != Some(pings) {
-				self.badge_status = platform::badge::set(window, pings).err().unwrap_or("");
-				self.badge = Some(pings);
+			self.badge = Some(pings);
+			// A failed set is retried on the next recount instead of being taken as shown.
+			if platform::badge::supported() && shown && self.badge_applied != Some(pings) {
+				let result = platform::badge::set(window, pings);
+				self.badge_status = result.err().unwrap_or("");
+				self.badge_applied = result.is_ok().then_some(pings);
+				if self.badge_applied.is_none() {
+					ctx.request_repaint_after(Duration::from_secs(5));
+				}
 			}
 			// A lapsing timed mute changes the count without any other activity.
 			if live
