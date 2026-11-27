@@ -703,6 +703,52 @@ impl MessagingUi {
 						entry.participant.user,
 					));
 				}
+				// A copy of the member follows the pointer while they are dragged to another
+				// channel; the channel list outlines the channel they would land in.
+				if draggable
+					&& row.dragged()
+					&& egui::DragAndDrop::has_payload_of_type::<VoiceDrag>(ui.ctx())
+					&& let Some(pointer) = ui.ctx().pointer_hover_pos()
+				{
+					ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+					egui::Area::new(egui::Id::unique((
+						"voice-drag-preview",
+						entry.participant.user,
+					)))
+					.order(egui::Order::Tooltip)
+					.fixed_pos(pointer + egui::vec2(14.0, -14.0))
+					.interactable(false)
+					.show(ui.ctx(), |ui| {
+						egui::Frame::popup(&ui.ctx().style_of(ui.ctx().theme()))
+							.fill(colors.raised)
+							.inner_margin(egui::Margin::symmetric(8, 4))
+							.corner_radius(8)
+							.show(ui, |ui| {
+								ui.set_opacity(0.9);
+								ui.horizontal(|ui| {
+									ui.spacing_mut().item_spacing.x = 6.0;
+									match user {
+										Some(user) => {
+											self.avatars.show_quiet(ui, user, 24.0, state.demo);
+										}
+										None => {
+											let (r, _) = ui.allocate_exact_size(
+												egui::Vec2::splat(24.0),
+												egui::Sense::hover(),
+											);
+											design::paint_avatar(ui, name, 24.0, r);
+										}
+									}
+									ui.add(
+										egui::Label::new(
+											RichText::new(name).color(colors.text_strong),
+										)
+										.selectable(false),
+									);
+								});
+							});
+					});
+				}
 				row.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
 				let hovered = row.contains_pointer() || row.has_focus();
 				if hovered {
@@ -5873,10 +5919,17 @@ mod tests {
 						egui::DragAndDrop::has_payload_of_type::<super::VoiceDrag>(&ctx),
 						"participant begins voice drag"
 					);
-					frame(
+					let hovering = frame(
 						&mut view,
 						&mut state,
 						vec![egui::Event::PointerMoved(target)],
+					);
+					assert!(
+						hovering
+							.iter()
+							.filter(|(text, _)| text.starts_with("Robin"))
+							.count() >= 2,
+						"a copy of the dragged member follows the pointer"
 					);
 					frame(
 						&mut view,

@@ -780,6 +780,9 @@ impl MessagingUi {
 		let previous_spacing = ui.spacing().item_spacing.y;
 		ui.spacing_mut().item_spacing.y = 0.0;
 		let mut drop_rows = Vec::new();
+		// Each voice channel's row joined with its participants' rows, so dropping a member
+		// anywhere on a channel's block moves them there.
+		let mut voice_targets: Vec<(Id, egui::Rect)> = Vec::new();
 		let output = self
 			.scroll
 			.attach(
@@ -895,6 +898,11 @@ impl MessagingUi {
 								ui.add_space(28.0);
 								self.voice_participant(ui, state, entry);
 							});
+							if let Some((channel, rect)) = voice_targets.last_mut()
+								&& *channel == entry.channel
+							{
+								*rect = rect.union(response.response.rect);
+							}
 							paint_shelf_rule(
 								ui,
 								response.response.rect,
@@ -969,34 +977,7 @@ impl MessagingUi {
 								{
 									response.dnd_set_drag_payload(ChannelDrag(channel.id));
 								}
-								if let Some(source) =
-									response.dnd_hover_payload::<crate::voice::VoiceDrag>()
-									&& state.can_moderate_voice(
-										source.0,
-										source.1,
-										source.2,
-										model::server_admin::VoiceChange::Move(Some(channel.id)),
-									) {
-									ui.painter().rect_stroke(
-										response.rect.shrink(1.0),
-										6,
-										(2.0, colors.positive),
-										egui::StrokeKind::Inside,
-									);
-									if response
-										.dnd_release_payload::<crate::voice::VoiceDrag>()
-										.is_some()
-									{
-										self.voice_moderation = Some((
-											source.0,
-											source.1,
-											source.2,
-											model::server_admin::VoiceChange::Move(Some(
-												channel.id,
-											)),
-										));
-									}
-								}
+								voice_targets.push((channel.id, response.rect));
 								if slot == Slot::Tree && !nested {
 									drop_rows.push(DropRow {
 										id: channel.id,
@@ -1545,6 +1526,34 @@ impl MessagingUi {
 				}
 			});
 		self.channel_list_view = Some((output.inner_rect, output.state.unclamped_offset().y));
+		if let Some(source) = egui::DragAndDrop::payload::<crate::voice::VoiceDrag>(ui.ctx())
+			&& let Some(pointer) = ui.ctx().pointer_hover_pos()
+			&& output.inner_rect.contains(pointer)
+			&& let Some(&(target, rect)) = voice_targets
+				.iter()
+				.find(|(_, rect)| pointer.y >= rect.top() && pointer.y <= rect.bottom())
+			&& state.can_moderate_voice(
+				source.0,
+				source.1,
+				source.2,
+				model::server_admin::VoiceChange::Move(Some(target)),
+			) {
+			ui.painter().with_clip_rect(output.inner_rect).rect_stroke(
+				rect.shrink(1.0),
+				6,
+				(2.0, colors.positive),
+				egui::StrokeKind::Inside,
+			);
+			if ui.input(|input| input.pointer.any_released()) {
+				egui::DragAndDrop::take_payload::<crate::voice::VoiceDrag>(ui.ctx());
+				self.voice_moderation = Some((
+					source.0,
+					source.1,
+					source.2,
+					model::server_admin::VoiceChange::Move(Some(target)),
+				));
+			}
+		}
 		if let Some(source) = egui::DragAndDrop::payload::<ChannelDrag>(ui.ctx())
 			&& let Some(pointer) = ui.ctx().pointer_hover_pos()
 			&& output.inner_rect.contains(pointer)
