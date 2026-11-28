@@ -1773,7 +1773,7 @@ for a range the user already left is still stored there. Group headers and perso
 those slots.
 The pane does not regroup loaded members or show a partial-list hint. Highest nonzero role color
 sets online names independently of the hoisted role used for grouping on the gateway. Offline
-names remain muted. Unknown role group ids fall back to the label Role. Role changes/removals
+names keep that color at reduced opacity; offline members without a colored role stay muted. Unknown role group ids fall back to the label Role. Role changes/removals
 reuse the live permission mirror, and member list SYNC/UPDATE supplies role membership. No
 directory fetch was added.
 

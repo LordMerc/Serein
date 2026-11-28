@@ -325,6 +325,59 @@ fn prime_voice_roles(state: &mut client_core::State) {
 	}
 }
 
+/// A synthetic member list for the selected channel: online and offline members with and
+/// without the name-color roles, so offline role colors can be compared with online ones.
+fn prime_member_roles(state: &mut client_core::State) {
+	prime_name_colors(state);
+	let channel = state.selected.expect("synthetic member conversation");
+	let (red, pink) = (model::Id(201), model::Id(202));
+	let person = |id: u64, name: &str, roles: Vec<model::Id>, status: &str| {
+		Some(model::MemberSlot::Person(model::Member {
+			roles,
+			user: model::User {
+				id: model::Id(id),
+				name: name.into(),
+				avatar: None,
+				webhook: false,
+				kind: Default::default(),
+				discriminator: 0,
+				username: None,
+				primary_guild: None,
+				cosmetics: None,
+			},
+			nick: None,
+			status: Some(status.into()),
+			custom_status: None,
+			activities: vec![],
+			clients: model::ClientPlatforms::default(),
+		}))
+	};
+	let group = |id: &str| Some(model::MemberSlot::Group(id.into()));
+	let slots = vec![
+		group("online"),
+		person(7001, "Synthetic Ash", vec![red], "online"),
+		person(7002, "Synthetic Birch", vec![pink], "online"),
+		person(7003, "Synthetic Cedar", vec![], "online"),
+		group("offline"),
+		person(7004, "Synthetic Dune", vec![red], "offline"),
+		person(7005, "Synthetic Elm", vec![pink], "offline"),
+		person(7006, "Synthetic Fern", vec![], "offline"),
+		person(7007, "Synthetic Grove", vec![red, pink], "offline"),
+	];
+	state.members = Some(model::MemberList {
+		guild: Some(model::Id(10)),
+		channel,
+		request: 0,
+		start: 0,
+		total: slots.len() as u64,
+		slots,
+		lazy: false,
+		freshness: model::Freshness::Fresh,
+		groups: vec![("online".into(), 3), ("offline".into(), 4)],
+		ranges: vec![],
+	});
+}
+
 fn prime_profile(state: &mut client_core::State) {
 	if let Some(client_core::Command::EditProfile { user, request, .. }) = state.load_own_profile()
 	{
@@ -836,7 +889,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|updates|general|chat|language|notifications|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--proxy-artwork] [--width=1120] [--height=760] [--scroll=PIXELS] [--toolbar-hover=normal|shift] [--close-settings] [--name-colors] [--voice-roles] [--keybinds-custom] [--keybinds-side] [--light] [--toasts] [--compact] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|updates|general|chat|language|notifications|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--proxy-artwork] [--width=1120] [--height=760] [--scroll=PIXELS] [--toolbar-hover=normal|shift] [--close-settings] [--name-colors] [--voice-roles] [--member-roles] [--keybinds-custom] [--keybinds-side] [--light] [--toasts] [--compact] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -919,6 +972,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let name_colors = args.iter().any(|arg| arg == "--name-colors");
 	// --voice-roles shows the offline voice fixture with colored roles on its participants.
 	let voice_roles = args.iter().any(|arg| arg == "--voice-roles");
+	// --member-roles shows online and offline members with the name-color roles.
+	let member_roles = args.iter().any(|arg| arg == "--member-roles");
 	// `--click=X,Y` presses the primary button there; `--manage-roles` makes you the owner.
 	let click = value("--click=")
 		.map(|at| {
@@ -930,6 +985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let close_settings = toolbar_hover.is_some()
 		|| name_colors
 		|| voice_roles
+		|| member_roles
 		|| args.iter().any(|arg| arg == "--close-settings");
 	let forum_tags: Vec<_> = value("--tags=")
 		.map(|list| {
@@ -1011,6 +1067,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 			if name_colors {
 				prime_name_colors(&mut state);
+			}
+			if member_roles {
+				prime_member_roles(&mut state);
 			}
 			if activities {
 				prime_activities(&mut state, proxy_artwork);

@@ -211,6 +211,10 @@ fn shift_clicked(ui: &egui::Ui, response: &egui::Response) -> bool {
 /// Height of every member list row, group header or person.
 const MEMBER_ROW: f32 = 42.0;
 
+/// Opacity of an offline member's role-coloured name, so it stays recognisable but recedes
+/// like the muted names of offline members without a coloured role.
+const OFFLINE_ROLE_NAME_OPACITY: f32 = 0.55;
+
 /// A person row that has not arrived, where `member_rows` paints the 32px avatar inset 8px and
 /// the name 12px after it. Status lines are optional, so only the name is drawn.
 const PENDING_MEMBER: skeleton::Row = skeleton::Row {
@@ -2327,16 +2331,19 @@ impl MessagingUi {
 										colors.sidebar,
 									);
 								}
-								let role_colors = online
-									.then(|| {
-										guild.and_then(|guild| {
-											state
-												.member_roles(guild, member)
-												.1
-												.map(|role| role.colors())
-										})
-									})
-									.flatten();
+								// Offline members keep their highest role colour, faded so the
+								// row still reads as offline next to the online groups.
+								let role_colors = guild.and_then(|guild| {
+									state
+										.member_roles(guild, member)
+										.1
+										.map(|role| role.colors())
+								});
+								let name_opacity = if online || role_colors.is_none() {
+									1.0
+								} else {
+									OFFLINE_ROLE_NAME_OPACITY
+								};
 								let text_color = if online { colors.text } else { colors.muted };
 								let mut show_name = |ui: &mut egui::Ui| {
 									ui.allocate_ui_with_layout(
@@ -2355,25 +2362,29 @@ impl MessagingUi {
 											crate::name_styles::in_row(
 												response.contains_pointer() || response.has_focus(),
 												|| {
-													account_badge::name(
-														ui,
-														&member.user,
-														name,
-														15.0,
-														(
-															text_color,
-															role_colors,
-															if response.hovered()
-																|| response.has_focus()
-															{
-																colors.hover
-															} else {
-																colors.sidebar
-															},
-														),
-														egui::Sense::hover(),
-														trailing,
-													)
+													ui.scope(|ui| {
+														ui.multiply_opacity(name_opacity);
+														account_badge::name(
+															ui,
+															&member.user,
+															name,
+															15.0,
+															(
+																text_color,
+																role_colors,
+																if response.hovered()
+																	|| response.has_focus()
+																{
+																	colors.hover
+																} else {
+																	colors.sidebar
+																},
+															),
+															egui::Sense::hover(),
+															trailing,
+														)
+													})
+													.inner
 												},
 											);
 											if let Some(tag) = server_tag {
@@ -10167,6 +10178,10 @@ mod composer_tests {
 			member.roles.push(Id(8));
 		}
 		let slots = &mut state.members.as_mut().unwrap().slots;
+		// Offline Synthetic 4 keeps the role colour, faded; offline Synthetic 6 has none.
+		if let Some(model::MemberSlot::Person(m)) = slots[3].as_mut() {
+			m.roles.push(Id(8));
+		}
 		if let Some(model::MemberSlot::Person(m)) = slots[0].as_mut() {
 			m.user.kind = model::AccountKind::Bot;
 		}
@@ -10214,6 +10229,33 @@ mod composer_tests {
 		for id in 1..=6 {
 			assert!(text.iter().any(|label| label == &format!("Synthetic {id}")));
 		}
+		fn name_color(shape: &egui::Shape, wanted: &str) -> Option<egui::Color32> {
+			match shape {
+				egui::Shape::Text(text) if text.galley.job.text == wanted => {
+					Some(text.galley.rows[0].visuals.mesh.vertices[0].color)
+				}
+				egui::Shape::Vec(shapes) => {
+					shapes.iter().find_map(|shape| name_color(shape, wanted))
+				}
+				_ => None,
+			}
+		}
+		let color = |name: &str| {
+			output
+				.shapes
+				.iter()
+				.find_map(|shape| name_color(&shape.shape, name))
+				.unwrap_or_else(|| panic!("Missing {name}"))
+		};
+		let online = color("Synthetic 1");
+		assert_eq!(
+			color("Synthetic 4"),
+			online.gamma_multiply(OFFLINE_ROLE_NAME_OPACITY),
+			"Offline members keep their highest role colour, faded"
+		);
+		let plain = color("Synthetic 6");
+		assert!(plain.is_opaque(), "Offline names without a role stay muted");
+		assert_ne!(plain.to_opaque(), online);
 		for status in [
 			"Online",
 			"Away",
